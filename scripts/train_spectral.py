@@ -88,7 +88,7 @@ def main():
     # Batch size 8
     BATCH_SIZE = 8
     CLIP_LEN_samples = 44100 * 2 # 2 seconds
-    EPOCHS = 1000
+    EPOCHS = 2000
     
     pbar = tqdm(range(EPOCHS))
     history = []

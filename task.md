@@ -22,6 +22,7 @@
     - [x] Implement Training Script (`scripts/train_spectral.py`)
     - [x] Refine Loss: Linear Amplitude Weighting (Solved "Spectral Soup")
     - [x] Refine Phase: Coherent Attack (Solved "Phaser" artifact)
+    - [x] Refine Physics: Unison Support (Solved "Dead Tone" artifact)
 
 - [x] **Verification & Reports**
     - [x] Generate scale comparison (`scripts/generate_scale_comparison.py`)
