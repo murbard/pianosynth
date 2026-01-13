@@ -9,3 +9,9 @@
 - [x] Update WaveRNN model to ~25k parameters (Hidden=80) <!-- id: 6 -->
 - [x] Update training script to load all notes (pp, mf, ff) <!-- id: 7 -->
 - [/] Configure long training run (Generate every 50 epochs) <!-- id: 8 -->
+- [x] Download Data (DATA_SETUP.md) <!-- id: 9 -->
+- [x] Replicate C4 mf results (2000 epochs) <!-- id: 10 -->
+- [ ] Refactor model for individual note parameters (remove splines) <!-- id: 11 -->
+- [ ] Train individual parameters for all notes <!-- id: 12 -->
+- [ ] Analyze parameter trends and derive functional form <!-- id: 13 -->
+- [ ] Retrain global model with new functional form <!-- id: 14 -->
