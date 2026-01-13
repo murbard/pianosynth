@@ -45,12 +45,16 @@ def main():
     velocity = velocities[0].unsqueeze(0) # Shape [1]
     
     midi_t = torch.tensor([midi_val], device=device, dtype=torch.float32)
-    
+
     overrides = model.get_overrides()
-    
-    # Length: same as true audio? Or 2s clip?
-    # Training was 2s (88200 samples)
+
+    # Force 2 seconds (88200 samples)
     dur_samples = 88200
+    if len(true_audio) > dur_samples:
+        true_audio = true_audio[:dur_samples]
+    else:
+        pad = torch.zeros(dur_samples - len(true_audio), device=device)
+        true_audio = torch.cat([true_audio, pad])
     
     print("Calculating physics...")
     phys_out = calculate_partials(
@@ -68,27 +72,25 @@ def main():
         tau_f=phys_out["tau_f"],
         amps=phys_out["amps"],
         w_curve=phys_out["w_curve"],
-        dur_samples=dur_samples
+        dur_samples=dur_samples,
+        reverb_wet=overrides.get("reverb_wet"),
+        reverb_decay=overrides.get("reverb_decay")
     )
     
     synth_audio = synth_audio.squeeze() # [samples]
     
     # 4. Save WAVs
-    # True
-    true_audio_cpu = true_audio.cpu().numpy()
-    sf.write(OUTPUT_DIR / "c4_mf_true.wav", true_audio_cpu, 44100)
-    print("Saved c4_mf_true.wav")
+    # Concatenate: True then Synth
+    gap = torch.zeros(int(44100 * 0.5), device=device) # 0.5s gap
     
-    # Synth
-    # Normalize synth to avoid clipping if necessary, or match true peak?
-    # Generally better to check levels.
-    synth_audio_cpu = synth_audio.detach().cpu().numpy()
+    # Ensure lengths match? Or just concat.
+    concat_audio = torch.cat([true_audio, gap, synth_audio])
     
-    # Simple peak normalization to -1dB if it's too quiet/loud?
-    # Or just raw to see energy match?
-    # Let's just save raw first.
-    sf.write(OUTPUT_DIR / "c4_mf_synth.wav", synth_audio_cpu, 44100)
-    print("Saved c4_mf_synth.wav")
+    concat_cpu = concat_audio.detach().cpu().numpy()
+    
+    out_path = OUTPUT_DIR / "c4_mf_comparison.wav"
+    sf.write(out_path, concat_cpu, 44100)
+    print(f"Saved {out_path}")
     
 if __name__ == "__main__":
     main()

@@ -54,10 +54,14 @@
         "k1": 0.050
     },
     "prompt_sound": {
-        "n_wmix_base": 5.0,
-        "n_wmix_slope": 7.0,
-        "w_min": 0.60,
-        "w_max": 0.98
+        "n_wmix_base": 20.0,
+        "n_wmix_slope": 0.0,
+        "w_min": 0.2,
+        "w_max": 0.95
+    },
+    "reverb": {
+        "wet": 0.05,
+        "decay": 0.5
     },
     "aftersound": {
         "fc_base": 900.0,

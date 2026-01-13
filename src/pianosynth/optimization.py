@@ -167,6 +167,10 @@ class PianoParam(nn.Module):
         # Attack
         overrides["rise_time_const"] = SP("attack.rise_time_const", 1e-4)
 
+        # Reverb
+        overrides["reverb_wet"] = torch.sigmoid(P("reverb.wet"))
+        overrides["reverb_decay"] = SP("reverb.decay", 0.05)
+
         return overrides
 
     # Keeping forward for compatibility but ideally we use overrides directly into synth

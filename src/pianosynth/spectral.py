@@ -41,7 +41,7 @@ class MultiResSTFTLoss(nn.Module):
             
         return loss / len(self.fft_sizes)
 
-def diff_piano_render(freqs, tau_s, tau_f, amps, w_curve, dur_samples, sr=44100):
+def diff_piano_render(freqs, tau_s, tau_f, amps, w_curve, dur_samples, sr=44100, reverb_wet=None, reverb_decay=None):
     """
     Fully differentiable synthesis for a batch of partials with double decay + 3 strings.
     freqs: [Batch, N, 3] (Center, Left, Right)
@@ -50,6 +50,8 @@ def diff_piano_render(freqs, tau_s, tau_f, amps, w_curve, dur_samples, sr=44100)
     amps: [Batch, N, 3] (Base amps * string_mask)
     w_curve: [Batch, N]
     dur_samples: int
+    reverb_wet: [Batch] or scalar, optional mix amount
+    reverb_decay: [Batch] or scalar, optional reverb time
     """
     device = freqs.device
     B, N, S = freqs.shape
@@ -91,5 +93,63 @@ def diff_piano_render(freqs, tau_s, tau_f, amps, w_curve, dur_samples, sr=44100)
     # Attack Envelope
     rise = 1.0 - torch.exp(-t / 0.005)
     y = y * rise.unsqueeze(0)
+
+    # Reverb
+    if reverb_wet is not None and reverb_decay is not None:
+        # Generate Impulse Response (Exponential Decay Noise)
+        # Unique IR per batch or shared? 
+        # Ideally unique if parameters vary, but 'noise' can be constant seed?
+        # Let's use constant seed for noise texture to avoid noise gradient variance,
+        # but apply variable envelope.
+        
+        # We need independent IRs if we want independent randomness, but for "room" simulation 
+        # usually 1 room per batch. If batch has multiple notes, they share room? 
+        # But we optimize single notes mostly.
+        # Let's generate [1, T] noise for efficiency if params are same, else [B, T].
+        
+        if torch.is_tensor(reverb_decay):
+            dk = reverb_decay.view(-1, 1)
+        else:
+            dk = torch.tensor(reverb_decay, device=device).view(1, 1)
+            
+        noise = torch.randn(1, dur_samples, device=device) # Shared noise texture
+        
+        # Envelope: exp(-t / decay)
+        # t is [T]
+        env_ir = torch.exp(-t.unsqueeze(0) / (dk + 1e-6))
+        
+        ir = noise * env_ir # [B, T]
+        
+        # Normalize Energy of IR to 1 (or something consistent)
+        ir_energy = torch.norm(ir, dim=1, keepdim=True) + 1e-6
+        ir = ir / ir_energy
+        
+        # Convolution via FFT
+        # Padding: linear convolution requires T + T - 1 length. 
+        # But we want output same size? Or reverb tail extending?
+        # Usually wet signal extends. But our data is fixed length.
+        # We'll maintain length 'dur_samples'.
+        
+        n_fft = 2 * dur_samples 
+        # Round up to power of 2 for speed?
+        
+        Y = torch.fft.rfft(y, n=n_fft, dim=1)
+        H = torch.fft.rfft(ir, n=n_fft, dim=1)
+        
+        # Broadcast H if B=1 and Y has B>1? 
+        # ir is [B, T] or [1, T]. PyTorch broadcasts.
+        
+        Y_wet = torch.fft.irfft(Y * H, n=n_fft, dim=1)
+        
+        # Crop
+        y_wet = Y_wet[:, :dur_samples]
+        
+        # Mix
+        if torch.is_tensor(reverb_wet):
+            wet = reverb_wet.view(-1, 1)
+        else:
+            wet = torch.tensor(reverb_wet, device=device).view(1, 1)
+            
+        y = y + wet * y_wet
     
     return y

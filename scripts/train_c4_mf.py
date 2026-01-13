@@ -54,20 +54,35 @@ def main():
         print("No C4 mf data found. Run preprocess.py first?")
         return
         
-    # Model
-    model = PianoParam(device=device)
     loss_fn = MultiResSTFTLoss(device=device)
-    
-    # Velocities
-    # For single sample, just one velocity
     n_samples = len(dataset)
-    
+
     # Init guess for mf = 0.5
     init_vels = [0.5] * n_samples
         
     vel_logits = torch.logit(torch.tensor(init_vels, device=device))
     vel_logits = torch.nn.Parameter(vel_logits, requires_grad=True)
     
+    model = PianoParam(device=device)
+
+    # Load Checkpoint logic
+    start_epoch = 0
+    if PARAM_OUT.exists():
+        print(f"Resuming from {PARAM_OUT}...")
+        checkpoint = torch.load(PARAM_OUT, map_location=device)
+        model.load_state_dict(checkpoint["model_state"], strict=False)
+        
+        # Recover velocity logits from sigmoid values
+        saved_vels = checkpoint["velocities"] 
+        # saved_vels is sigmoid(logits)
+        # logits = logit(saved_vels)
+        # Avoid numerical instability at 0/1
+        saved_vels_clamped = saved_vels.clamp(1e-6, 1-1e-6)
+        vel_logits.data = torch.logit(saved_vels_clamped)
+        
+        # If we saved epoch/history, we could resume count, but simpler to just run N more
+        print("Checkpoint loaded. Continuing training...")
+
     optimizer = optim.Adam(list(model.parameters()) + [vel_logits], lr=1e-3)
     
     # Training Loop
@@ -129,7 +144,9 @@ def main():
             tau_f=phys_out["tau_f"],
             amps=phys_out["amps"],
             w_curve=phys_out["w_curve"],
-            dur_samples=CLIP_LEN_samples
+            dur_samples=CLIP_LEN_samples,
+            reverb_wet=overrides.get("reverb_wet"),
+            reverb_decay=overrides.get("reverb_decay")
         )
         
         # Loss
