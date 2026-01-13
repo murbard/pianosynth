@@ -1,37 +1,44 @@
-# Data-Driven Optimization Walkthrough
+# WaveRNN Implementation Walkthrough
 
-We have successfully optimized the physical piano model parameters using the University of Iowa Piano Dataset.
+## Overview
+We implemented a small autoregressive WaveRNN model to generate piano waveforms.
+The model conditions on:
+- **Past Samples**: 2000 samples context (encoded via CNN).
+- **Metadata**: Velocity, Log Pitch, Time.
+- **Hidden State**: Recurrent state from previous step.
 
-## Workflow Update: Robust Optimization
+## Architecture
+- **Context CNN**: 3-layer 1D CNN reducing 2000 samples to a size-16 vector.
+- **RNN Core**: GRU (Hidden Size 80).
+    - Input: [Context(16), Vel(1), Pitch(1), Time(1)] = 19 dim.
+- **Output**: Gaussian Distribution (Mu, Sigma).
 
-Based on user feedback, we refined the Optimization workflow to be physically robust without artificial constraints:
-*   **Loss Function**: Weighted **Log-Magnitude Loss** by the target linear amplitude. This focuses the optimizer on the peaks (harmonics) and ignores the noise floor, solving the "spectral soup" issue naturally.
-*   **Phase Coherence**: Set aligned phase ($\phi \approx 0$) for the attack transient to match the sharp "thump" of a real hammer, avoiding "phaser" artifacts.
-*   **Constraints Removed**: Removed artificial bounds on parameters, allowing the physics to emerge from the improved loss.
+**Total Parameters**: ~25,930 (Hidden Size 80).
 
-## Final Results (1000 Epochs)
+## Training
+- **Dataset**: Full University of Iowa Piano Dataset (All notes, pp/mf/ff).
+- **Strategy**: 
+    - Random 100-step sequences.
+    - Full-batch (Sequence training).
+    - 5000 Epochs.
+- **Progress**: Currently running full scale experiment.
 
-The model converged to a balanced, physically plausible piano profile.
+## Results
+- **Training Loss**: Converged to ~ -5.46 after 50 epochs (Single Note).
+- **Artifacts**:
+    - `results_single_note/wavernn_final.pt`: Trained Model
+    - `results_single_note/preview_epoch_50.wav`: Generated Preview (0.5s)
+    - `results_single_note/wavernn_loss.png`: Loss Curve
 
-### 1. Inharmonicity
-Recovered a realistic stiffness curve.
-*   Scale: **1.22** (Stiff Grand)
-*   **String Variation**: **2.5%** (Physically realistic, naturally minimized)
+Train loss consistently decreased, indicating the model learned to model the waveform distribution. Previews generated every 10 epochs allow monitoring of audio quality evolution.
 
-### 2. Tone & Timbre
-The parameters settled into a "sweet spot" between the mellow heuristic and the harsh bright bridge-strike of the unconstrained run.
-*   **Hammer Tilt**: $p \approx 2.16$ (Classic Mellow/Bright balance).
-*   **Strike Point**: **0.38** (Mid-string? This seems high, might be compensating for comb filtering effects).
-*   **Decay Time**: $8.86s$ (Natural long sustain).
+## Usage
+### Train
+```bash
+PYTHONPATH=src poetry run python scripts/train_wavernn.py
+```
 
-## Audio Results
-
-### Full Scale Comparison
-**[scale_comparison.wav](scale_comparison.wav)**
-*(First part: Unoptimized / Second part: Optimized)*
-
-The optimized scale features a coherent, sharp attack (no "phaser" woosh) and a balanced harmonic spectrum. The weighted loss successfully prevented the noise-filling artifacts.
-
-## Files
-*   **Config**: `src/pianosynth/default_params.json`
-*   **Optimized Checkpoint**: `src/pianosynth/params_spectral.pt`
+### Generate
+```bash
+PYTHONPATH=src poetry run python scripts/generate_wavernn.py
+```
