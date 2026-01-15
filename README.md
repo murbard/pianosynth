@@ -1,3 +1,12 @@
-# Piano Synth
+# PianoSynth
 
-A Python project to synthesize piano note sounds and render them as wav files.
+A fresh start for the PianoSynth project.
+
+## Legacy Code
+Old experiments and implementations can be found in the `attic/` directory.
+
+## Setup
+This project uses `uv`.
+```bash
+uv sync
+```

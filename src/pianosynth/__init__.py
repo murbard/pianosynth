@@ -1,3 +1,0 @@
-"""
-Pianosynth package.
-"""
