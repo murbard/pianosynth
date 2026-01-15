@@ -8,7 +8,7 @@ import random
 from pianosynth.optimization import PianoParam
 from pianosynth.spectral import MultiResSTFTLoss, diff_piano_render
 
-PROCESSED_DATA_DIR = Path("data/processed")
+PROCESSED_DATA_DIR = Path("data/clean_et")
 PARAM_OUT = Path("src/pianosynth/params_spectral.pt")
 
 def load_audio_data(device="cpu", max_files=None):

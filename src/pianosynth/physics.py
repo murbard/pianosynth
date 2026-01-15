@@ -25,11 +25,10 @@ def get_b_vectorized(midi, b_knots, device):
     
     return torch.pow(10.0, out_log_b)
 
-def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
+def calculate_partials(midi, overrides, n_partials=64, device="cpu"):
     """
     Vectorized physics calculator.
     midi: [Batch] or scalar
-    velocity: [Batch] or scalar
     overrides: dict from PianoParam.get_overrides()
     
     Returns:
@@ -41,10 +40,6 @@ def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
     if not torch.is_tensor(midi):
         midi = torch.tensor([midi], device=device).float()
     if midi.ndim == 0: midi = midi.unsqueeze(0)
-    
-    if not torch.is_tensor(velocity):
-        velocity = torch.tensor([velocity], device=device).float()
-    if velocity.ndim == 0: velocity = velocity.unsqueeze(0)
     
     B_size = midi.shape[0]
     
@@ -59,71 +54,35 @@ def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
     def P(k): return overrides[k]
     
     # --- Tuning ---
-    # f_et
-    # stretch curve (Removed for strict ET)
-    # gamma = P("railsback_gamma")
-    # s_bass_amt = P("stretch_bass_amount")
-    # s_bass_rng = P("stretch_bass_range")
-    # s_treb_amt = P("stretch_treble_amount")
-    # s_treb_rng = P("stretch_treble_range")
-    
     f_et = 440.0 * torch.pow(two, (midi - 69.0) / 12.0)
-    
-    # Tuning: Strict ET as requested
-    # f_et IS the fundamental
     f0 = f_et # [Batch]
     
     # --- Inharmonicity ---
     if "B_val" in overrides:
         B_eff = P("B_val")
     else:
-        B_vals = get_b_vectorized(midi, P("B_knots"), device)
-        B_scale = P("B_scale")
-        B_eff = B_vals * B_scale # [Batch]
-    # get_b_vectorized returns tensor same shape as midi [Batch]
+        # Legacy fallback if overrides incomplete (should not happen in new training)
+        B_vals = get_b_vectorized(midi, torch.tensor([5e-4]*5, device=device), device)
+        B_scale = 1.0
+        B_eff = B_vals * B_scale 
     
-    # Freqs
-    # In synth.py: 3 strings per note with detuning.
-    # We need to implement this here for the optimizer to learn detuning params.
-    # Strings: 1 (Bass), 2 (Mid), 3 (Treble). Simple 3 always for training?
-    # Or match synth logic based on MIDI.
-    
-    # Detuning Params
+    # Detuning
     if "unison_detune_cents" in overrides:
         dc = P("unison_detune_cents")
-    else:
-        dc_base = P("dc_base")
-        dc_slope = P("dc_slope")
-        dc = dc_base + dc_slope * ((midi - 21.0) / 87.0)
-    
-    # Random Detuning
-    if "unison_random_cents" in overrides:
         rnd_std = P("unison_random_cents")
     else:
-        rnd_base = P("random_detune_base")
-        rnd_slope = P("random_detune_slope")
-        rnd_std = rnd_base + rnd_slope * ((midi - 21.0) / 87.0)
+        dc = torch.zeros_like(midi)
+        rnd_std = torch.zeros_like(midi)
     
     # String Variation Params
-    B_var_std = P("string_variation_std")
+    if "string_variation_std" in overrides:
+        B_var_std = P("string_variation_std")
+    else:
+        B_var_std = torch.zeros_like(midi)
 
     # Expand to 3 strings: [Batch, 1, 3]
-    # Logic from synth.py:
-    # <=28: 1 string (0.0)
-    # <=40: 2 strings (-0.5dc, 0.5dc)
-    # >40: 3 strings (-dc, 0, dc)
-    # Vectorized implementation:
-    
     c_list = []
     # Fixed detuning offsets [Batch, 3]
-    # We'll use 3 dimensions for all, and mask amp later if needed? 
-    # Or just replicate synth logic.
-    
-    # 0 = Center/Single
-    # 1 = Left
-    # 2 = Right
-    
-    # Let's produce [Batch, 3] cents deviation
     c_offsets = torch.zeros(B_size, 3, device=device)
     
     # Treble (>40)
@@ -138,38 +97,22 @@ def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
     if mask_2.any():
         c_offsets[mask_2, 0] = -0.5 * dc.view(-1)[mask_2]
         c_offsets[mask_2, 1] = 0.5 * dc.view(-1)[mask_2]
-        c_offsets[mask_2, 2] = 0.0 # Unused effectively, or 0? 
-        # Wait, if we use 3 slots, 2 strings means only 2 are active.
-        # Ideally we modulate amplitude to turn off string 3?
-        # But for TRAINING simplicty, let's just model 3 strings everywhere 
-        # effectively or careful mask.
-        # Actually synth.py returns "S" strings.
-        # We need constant tensor size for batching -> [Batch, N, 3].
+        c_offsets[mask_2, 2] = 0.0
         
-    # Bass (<=28)
-    # 0,0,0
-    
-    # Random detuning (Training: Sample random noise? Or learn noise mean? Noise is noise.)
-    # If we optimize stochastic params, we use Reparam Trick or just noise injection.
-    # Noise injection allows learning variance if loss sees variance.
-    # For now, let's inject noise so optimizer learns to minimize it (or set to correct level).
-    # [Batch, 3]
+    # Random detuning
     if rnd_std.ndim == 0:
-        rnd_std = rnd_std.unsqueeze(0).unsqueeze(1) # [1, 1] to broadcast
+        rnd_std = rnd_std.unsqueeze(0).unsqueeze(1)
     elif rnd_std.ndim == 1:
-        rnd_std = rnd_std.unsqueeze(1) # [Batch, 1]
+        rnd_std = rnd_std.unsqueeze(1)
     
     rand_c = torch.randn(B_size, 3, device=device) * rnd_std
     
     c_total = c_offsets + rand_c
     
-    # Apply to F0: [Batch, 1, 3]
-    # f0 is [Batch], so unsqueeze(1).unsqueeze(2) to get [Batch, 1, 1]
+    # Apply to F0
     f0_s = f0.unsqueeze(1).unsqueeze(2) * torch.pow(2.0, c_total.unsqueeze(1) / 1200.0)
     
     # Inharmonicity Variation
-    # [Batch, 3]
-    # B_var_std is scalar or [1] from P()
     if B_var_std.ndim == 0:
         B_var_std = B_var_std.unsqueeze(0).unsqueeze(1)
     elif B_var_std.ndim == 1:
@@ -181,23 +124,12 @@ def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
     B_s = (B_eff.unsqueeze(1) * B_j).clamp(min=1e-7) # [Batch, 3]
     
     # Final Freqs [Batch, N, 3]
-    # f0_s: [B, 1, 3]
-    # n: [1, N, 1]
-    # B_s: [B, 1, 3]
-    
     n_exp = n.unsqueeze(2) # [1, N, 1]
     n2 = n_exp.pow(2)
     
     fn = n_exp * f0_s * torch.sqrt(1.0 + B_s.unsqueeze(1) * n2)
     
-    # We must handle 1/2 string masking in Amps?
-    # Or just let them play (physics approx).
-    # synth.py logic: "S" depends on midi.
-    # If we output 3 always, bass will phase cancel or double volume?
-    # Bass: 0, 0, 0 detune. 3 identical strings = +9.5dB. 
-    # Real bass is 1 string.
-    # We MUST mask amplitudes.
-    
+    # Masking
     string_mask = torch.ones(B_size, 3, device=device)
     if mask_2.any():
         string_mask[mask_2, 2] = 0.0 # Only 2 strings
@@ -207,116 +139,106 @@ def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
         string_mask[mask_1, 2] = 0.0
         
     # --- Decays ---
-    # tau_s0 = A * (55/f0)^p
-    # Decay
     if "decay_tau" in overrides:
         tau_s0 = P("decay_tau").unsqueeze(1) # [Batch, 1]
     else:
-        dA = P("A")
-        dp = P("p")
-        tau_s0 = dA.unsqueeze(1) * torch.pow(55.0 / f0.unsqueeze(1), dp.unsqueeze(1))
+        tau_s0 = torch.ones_like(f0).unsqueeze(1)
         
-    # k stiffness
     if "decay_k" in overrides:
         k = P("decay_k")
     else:
-        dk0 = P("k0")
-        dk1 = P("k1")
-        m_norm = (midi - 21.0) / 87.0
-        k = dk0 + dk1 * m_norm # [Batch]
+        k = torch.zeros_like(f0)
     
     tau_s = tau_s0 / (1.0 + k.unsqueeze(1) * (n**2))
     
-    # tau_f ...
-    div = P("tau_fast_divisor")
+    # tau_f
+    if "tau_fast_divisor" in overrides:
+        div = P("tau_fast_divisor")
+    else:
+        div = torch.ones_like(f0) * 8.0
+        
     tau_f = (tau_s0 / div.unsqueeze(1)) / (1.0 + 4.0 * k.unsqueeze(1) * (n**2))
     
     # --- Amplitudes ---
-    # ... (existing calculation for A0 center) ...
-    # Comb
     # Strike Position xh
     if "hammer_xh" in overrides:
         xh = P("hammer_xh")
     else:
-        xh_b = P("xh_bass")
-        xh_t = P("xh_treble")
-        xh = xh_b - (xh_b - xh_t) * m_norm 
+        xh = torch.ones_like(f0) * 0.12
         
-    c_mix = P("comb_mix")
-    c_base = P("comb_base")
+    if "comb_mix" in overrides:
+        c_mix = P("comb_mix")
+        c_base = P("comb_base")
+    else:
+        c_mix = 0.5; c_base = 0.5
+        
     comb = c_base.unsqueeze(1) + c_mix.unsqueeze(1) * torch.sin(torch.pi * n * xh.unsqueeze(1)).pow(2)
     
-    # Tilt (keep velocity dep)
-    t_base = P("tilt_base")
-    t_slope = P("tilt_slope")
-    p_tilt = t_base - t_slope * velocity
+    # Tilt (Categorical)
+    if "hammer_p_tilt" in overrides:
+        p_tilt = P("hammer_p_tilt")
+    else:
+        p_tilt = torch.ones_like(f0) * 2.0
+        
     tilt = torch.pow(n, -p_tilt.unsqueeze(1))
     
-    # Hammer Lowpass fc
-    if "hammer_fc_low" in overrides:
-         fc_low = P("hammer_fc_low").unsqueeze(1)
-         fc_high = P("hammer_fc_high").unsqueeze(1)
-         fc_curve = P("hammer_fc_v_curve").unsqueeze(1)
-         
-         # Interpolate based on velocity
-         # fc = low + (high-low) * vel^curve
-         fc = fc_low + (fc_high - fc_low) * torch.pow(velocity.unsqueeze(1), fc_curve)
+    # Hammer Lowpass fc (Categorical)
+    if "hammer_fc" in overrides:
+         fc = P("hammer_fc").unsqueeze(1)
     else:
-        fc_min = P("fc_min")
-        fc_max = P("fc_max")
-        fc_v = P("fc_v_power")
-        fc_f = P("fc_f_power")
-        fc = fc_min.unsqueeze(1) + (fc_max.unsqueeze(1) - fc_min.unsqueeze(1)) * torch.pow(velocity.unsqueeze(1), fc_v.unsqueeze(1)) * torch.pow(f0.unsqueeze(1) / 261.63, fc_f.unsqueeze(1))
+         fc = torch.ones_like(f0).unsqueeze(1) * 2000.0
     
-    fc = fc.clamp(20.0, 20000.0) # Safety Clamp wider
+    fc = fc.clamp(20.0, 20000.0)
     
     # Use freq center for partial
     freq_center = n * f0.unsqueeze(1) * torch.sqrt(1.0 + B_eff.unsqueeze(1) * n.pow(2))
     
     H_hammer = torch.rsqrt(1.0 + torch.pow(freq_center / fc, 4.0))
     
-    # N_w
-    nw_b = P("nw_base")
-    nw_s = P("nw_slope")
-    n_w = nw_b.unsqueeze(1) + nw_s.unsqueeze(1) * velocity.unsqueeze(1)
+    # N_w (Categorical)
+    if "hammer_nw" in overrides:
+        n_w = P("hammer_nw").unsqueeze(1)
+    else:
+        n_w = torch.ones_like(f0).unsqueeze(1) * 30.0
+        
     W = torch.exp(-torch.pow(n / n_w, 2.0))
     
     # Body
-    hp_f = P("highpass_freq")
-    hp_p = P("highpass_power")
-    lp_f = P("lowpass_freq")
-    lp_p = P("lowpass_power")
-    
-    H_body = torch.pow(freq_center / hp_f.unsqueeze(1), hp_p.unsqueeze(1)) * torch.rsqrt(1.0 + torch.pow(freq_center / lp_f.unsqueeze(1), lp_p.unsqueeze(1)))
+    if "highpass_freq" in overrides:
+        hp_f = P("highpass_freq")
+        hp_p = P("highpass_power")
+        lp_f = P("lowpass_freq")
+        lp_p = P("lowpass_power")
+        
+        H_body = torch.pow(freq_center / hp_f.unsqueeze(1), hp_p.unsqueeze(1)) * torch.rsqrt(1.0 + torch.pow(freq_center / lp_f.unsqueeze(1), lp_p.unsqueeze(1)))
+    else:
+        H_body = 1.0
     
     # Final A0 (Center)
-    A0 = torch.pow(velocity.unsqueeze(1), 1.7) * comb * tilt * H_hammer * W * H_body
-    
-    # Split A0 into 3 strings
-    # We normalized A0 in synth.py? No it sums directly.
-    # But if we have 3 strings, we have 3x energy IF coherent.
-    # In synth.py, it simply does `y = sum(strings)`.
-    # So for correct loss, we must output 3 strings masked.
+    # Amplitude (Categorical)
+    if "amplitude" in overrides:
+        base_amp = P("amplitude").unsqueeze(1)
+    else:
+        base_amp = 0.5
+        
+    A0 = base_amp * comb * tilt * H_hammer * W * H_body
     
     # Amps: [Batch, N, 3]
     amps_3 = A0.unsqueeze(2) * string_mask.unsqueeze(1)
-    amps_3 = amps_3.clamp(max=1e3) # Safety clamp for stability
-    # We should divide single strings by S_count? 
-    # No, physically a 3-string piano key hits 3 strings, so it IS louder.
-    # The A0 calculation has implicit gain. 
-    # If we optimize A0 params (Decay A, etc) against real audio, it will learn total loudness.
-    # So we just output 3 strings.
+    amps_3 = amps_3.clamp(max=1e5)
     
-    # Prompt W mix (needed for renderer to mix fast/slow)
+    # Prompt W mix
     if "prompt_n_mix" in overrides:
         n_wmix = P("prompt_n_mix").unsqueeze(1)
     else:
-        nmix_b = P("n_wmix_base")
-        nmix_s = P("n_wmix_slope")
-        n_wmix = nmix_b.unsqueeze(1) + nmix_s.unsqueeze(1) * m_norm.unsqueeze(1)
+        n_wmix = torch.ones_like(f0).unsqueeze(1) * 20.0
     
-    w_min = P("w_min")
-    w_max = P("w_max")
+    if "w_min" in overrides:
+        w_min = P("w_min")
+        w_max = P("w_max")
+    else:
+        w_min = 0.0; w_max = 1.0
+        
     w_curve = w_min.unsqueeze(1) + (w_max.unsqueeze(1) - w_min.unsqueeze(1)) * (1.0 - torch.exp(-torch.pow(n / n_wmix, 2.0)))
     
     return {
@@ -324,5 +246,7 @@ def calculate_partials(midi, velocity, overrides, n_partials=64, device="cpu"):
         "tau_s": tau_s,
         "tau_f": tau_f,
         "amps": amps_3,
-        "w_curve": w_curve
+        "w_curve": w_curve,
+        "reverb_wet": overrides.get("reverb_wet", None),
+        "reverb_decay": overrides.get("reverb_decay", None)
     }
