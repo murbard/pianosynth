@@ -13,7 +13,7 @@ def main():
     model = PianoParam(device="cpu")
     checkpoint = torch.load(PARAM_PATH, map_location="cpu")
     if "model_state" in checkpoint:
-        model.load_state_dict(checkpoint["model_state"])
+        model.load_state_dict(checkpoint["model_state"], strict=False)
     else:
         model.load_state_dict(checkpoint)
         
